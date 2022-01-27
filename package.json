@@ -1,6 +1,6 @@
 {
   "name": "@solendprotocol/solend-sdk",
-  "version": "0.4.6",
+  "version": "0.4.7",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -24,6 +24,7 @@
     "axios": "^0.24.0",
     "bignumber.js": "^9.0.2",
     "bn.js": "^5.2.0",
+    "buffer": "^6.0.3",
     "buffer-layout": "^1.2.0",
     "isomorphic-fetch": "^3.0.0"
   },
