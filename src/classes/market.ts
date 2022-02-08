@@ -51,12 +51,14 @@ type FormattedMarketConfig = ReturnType<typeof formatReserveConfig>;
 
 const API_ENDPOINT = "https://api.solend.fi";
 
-function formatReserveConfig(config: ConfigType) {
-  const mainMarket = config.markets.find((mar) => mar.name === "main");
-  if (!mainMarket) {
-    throw Error("Main market not found.");
+function formatReserveConfig(config: ConfigType, marketAddress?: string) {
+  const market = marketAddress
+    ? config.markets.find((mar) => mar.address === marketAddress)
+    : config.markets.find((mar) => mar.isPrimary) ?? config.markets[0];
+  if (!market) {
+    throw Error("No markets found.");
   }
-  const hydratedReserves = mainMarket.reserves.map((res) => {
+  const hydratedReserves = market.reserves.map((res) => {
     const assetData = config.assets.find((asset) => asset.symbol === res.asset);
     if (!assetData) {
       throw new Error(`Could not find asset ${res.asset} in config`);
@@ -77,7 +79,7 @@ function formatReserveConfig(config: ConfigType) {
     };
   });
   return {
-    ...mainMarket,
+    ...market,
     pythProgramID: config.oracles.pythProgramID,
     switchboardProgramID: config.oracles.switchboardProgramID,
     programID: config.programID,
@@ -103,13 +105,14 @@ export class SolendMarket {
 
   static async initialize(
     connection: Connection,
-    environment: "production" | "devnet" = "production"
+    environment: "production" | "devnet" = "production",
+    marketAddress?: string
   ) {
     const market = new SolendMarket(connection);
     const rawConfig = (await (
       await axios.get(`${API_ENDPOINT}/v1/config?deployment=${environment}`)
     ).data) as ConfigType;
-    market.config = formatReserveConfig(rawConfig);
+    market.config = formatReserveConfig(rawConfig, marketAddress);
     market.reserves = market.config.reserves.map(
       (res) => new SolendReserve(res, market, connection)
     );
@@ -421,24 +424,32 @@ export class SolendReserve {
     const currentUtilization = this.calculateUtilizationRatio(reserve);
     const optimalUtilization = reserve.config.optimalUtilizationRate / 100;
 
-    let borrowAPY;
+    let borrowAPR;
     if (optimalUtilization === 1.0 || currentUtilization < optimalUtilization) {
       const normalizedFactor = currentUtilization / optimalUtilization;
       const optimalBorrowRate = reserve.config.optimalBorrowRate / 100;
       const minBorrowRate = reserve.config.minBorrowRate / 100;
-      borrowAPY =
+      borrowAPR =
         normalizedFactor * (optimalBorrowRate - minBorrowRate) + minBorrowRate;
     } else {
       const normalizedFactor =
         (currentUtilization - optimalUtilization) / (1 - optimalUtilization);
       const optimalBorrowRate = reserve.config.optimalBorrowRate / 100;
       const maxBorrowRate = reserve.config.maxBorrowRate / 100;
-      borrowAPY =
+      borrowAPR =
         normalizedFactor * (maxBorrowRate - optimalBorrowRate) +
         optimalBorrowRate;
     }
 
-    return borrowAPY;
+    const SLOTS_PER_YEAR = 63072000;
+    const apy =
+      new BigNumber(1)
+        .plus(new BigNumber(borrowAPR).dividedBy(63072000))
+        .toNumber() **
+        SLOTS_PER_YEAR -
+      1;
+
+    return apy;
   }
 
   setBuffer(buffer: AccountInfo<Buffer> | null) {
@@ -494,20 +505,23 @@ export class SolendReserve {
       );
     }
 
-    const rewards = this.market.rewardsData[this.config.mintAddress].supply.map(
-      (reward) => ({
-        rewardMint: reward.rewardMint,
-        rewardSymbol: reward.rewardSymbol,
-        apy: this.calculateRewardAPY(
-          reward.rewardRate,
-          stats.totalDepositsWads.toString(),
-          reward.price,
-          stats.assetPriceUSD,
-          this.config.decimals
-        ).toNumber(),
-        price: reward.price,
-      })
-    );
+    const rewards = this.market.config?.isPrimary
+      ? this.market.rewardsData[this.config.mintAddress].supply.map(
+          (reward) => ({
+            rewardMint: reward.rewardMint,
+            rewardSymbol: reward.rewardSymbol,
+            apy: this.calculateRewardAPY(
+              reward.rewardRate,
+              stats.totalDepositsWads.toString(),
+              reward.price,
+              stats.assetPriceUSD,
+              this.config.decimals
+            ).toNumber(),
+            price: reward.price,
+          })
+        )
+      : [];
+
     const totalAPY = new BigNumber(stats.supplyInterestAPY)
       .plus(
         rewards.reduce((acc, reward) => acc.plus(reward.apy), new BigNumber(0))
@@ -529,20 +543,22 @@ export class SolendReserve {
       );
     }
 
-    const rewards = this.market.rewardsData[this.config.mintAddress].borrow.map(
-      (reward) => ({
-        rewardMint: reward.rewardMint,
-        rewardSymbol: reward.rewardSymbol,
-        apy: this.calculateRewardAPY(
-          reward.rewardRate,
-          stats.totalBorrowsWads.toString(),
-          reward.price,
-          stats.assetPriceUSD,
-          this.config.decimals
-        ).toNumber(),
-        price: reward.price,
-      })
-    );
+    const rewards = this.market.config?.isPrimary
+      ? this.market.rewardsData[this.config.mintAddress].borrow.map(
+          (reward) => ({
+            rewardMint: reward.rewardMint,
+            rewardSymbol: reward.rewardSymbol,
+            apy: this.calculateRewardAPY(
+              reward.rewardRate,
+              stats.totalBorrowsWads.toString(),
+              reward.price,
+              stats.assetPriceUSD,
+              this.config.decimals
+            ).toNumber(),
+            price: reward.price,
+          })
+        )
+      : [];
     const totalAPY = new BigNumber(stats.borrowInterestAPY)
       .minus(
         rewards.reduce((acc, reward) => acc.plus(reward.apy), new BigNumber(0))
@@ -711,6 +727,7 @@ export class SolendObligation {
             .toNumber()
         ).toString()
       );
+
       const borrowAmountUSD = new BigNumber(borrowAmount.toString())
         .multipliedBy(reserve!.stats!.assetPriceUSD)
         .dividedBy("1".concat(Array(reserve!.stats!.decimals + 1).join("0")));
