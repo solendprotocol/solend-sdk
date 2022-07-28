@@ -40,7 +40,7 @@ import {
 } from "../instructions";
 import { U64_MAX, WAD } from "./constants";
 import BigNumber from "bignumber.js";
-import { parseReserve } from "..";
+import { parseReserve } from "../state";
 import axios from "axios";
 
 export const POSITION_LIMIT = 6;
