@@ -166,18 +166,6 @@ export class SolendMarket {
     await Promise.all(promises);
   }
 
-  private async loadLMRewardData() {
-    const data = (
-      await axios.get(`${API_ENDPOINT}/liquidity-mining/reward-stats-v2`)
-    ).data as Promise<{
-      [marketAddress: string]: {
-        [mintAddress: string]: RewardResponse;
-      };
-    }>;
-
-    return data;
-  }
-
   private async loadExternalRewardData() {
     const data = (
       await axios.get(
@@ -230,84 +218,59 @@ export class SolendMarket {
     }
 
     const promises = [
-      this.loadLMRewardData(),
       this.loadExternalRewardData(),
       this.connection.getSlot("finalized"),
     ] as const;
 
-    const [lmRewards, externalRewards, currentSlot] = await Promise.all(
-      promises
-    );
+    const [externalRewards, currentSlot] = await Promise.all(promises);
 
     const querySymbols = [
       ...new Set(externalRewards.map((reward) => reward.rewardSymbol)),
     ];
 
-    const priceData = await this.loadPriceData(querySymbols.concat("SLND"));
+    let priceData = await this.loadPriceData(querySymbols.concat("SLND"));
+    // TODO update pricing endpoint to cover Solend options, as otherwise
+    // it will need to be updated every time option strike price changes.
+    priceData["SLND_OPTION"] = priceData["SLND"] * 0.8;
 
     this.rewardsData = this.reserves.reduce((acc, reserve) => {
       const {
         config: { mintAddress },
       } = reserve;
-      const lmReward = lmRewards[this.config!.address][mintAddress];
 
-      const supply = [
-        lmReward?.supply
-          ? {
-              rewardRate: this.getLatestRewardRate(
-                lmReward.supply.rewardRates,
-                currentSlot
-              ).rewardRate,
-              rewardMint: "SLNDpmoWTVADgEdndyvWzroNL7zSi1dF9PC3xHGtPwp",
-              rewardSymbol: "SLND",
-              price: new BigNumber(priceData.SLND).toNumber(),
-            }
-          : null,
-        ...externalRewards
-          .filter(
-            (externalReward) =>
-              externalReward.reserveID === reserve.config.address &&
-              externalReward.side === "supply"
-          )
-          .map((externalReward) => ({
-            rewardRate: this.getLatestRewardRate(
-              externalReward.rewardRates,
-              currentSlot
-            ).rewardRate,
-            rewardMint: externalReward.rewardMint,
-            rewardSymbol: externalReward.rewardSymbol,
-            price: priceData[externalReward.rewardSymbol],
-          })),
-      ].filter(Boolean);
+      const supply = externalRewards
+        .filter(
+          (externalReward) =>
+            externalReward.reserveID === reserve.config.address &&
+            externalReward.side === "supply"
+        )
+        .map((externalReward) => ({
+          rewardRate: this.getLatestRewardRate(
+            externalReward.rewardRates,
+            currentSlot
+          ).rewardRate,
+          rewardMint: externalReward.rewardMint,
+          rewardSymbol: externalReward.rewardSymbol,
+          price: priceData[externalReward.rewardSymbol],
+        }))
+        .filter(Boolean);
 
-      const borrow = [
-        lmReward?.borrow
-          ? {
-              rewardRate: this.getLatestRewardRate(
-                lmReward.borrow.rewardRates,
-                currentSlot
-              ).rewardRate,
-              rewardMint: "SLNDpmoWTVADgEdndyvWzroNL7zSi1dF9PC3xHGtPwp",
-              rewardSymbol: "SLND",
-              price: new BigNumber(priceData.SLND).toNumber(),
-            }
-          : null,
-        ...externalRewards
-          .filter(
-            (externalReward) =>
-              externalReward.reserveID === reserve.config.address &&
-              externalReward.side === "borrow"
-          )
-          .map((externalReward) => ({
-            rewardRate: this.getLatestRewardRate(
-              externalReward.rewardRates,
-              currentSlot
-            ).rewardRate,
-            rewardMint: externalReward.rewardMint,
-            rewardSymbol: externalReward.rewardSymbol,
-            price: priceData[externalReward.rewardSymbol],
-          })),
-      ].filter(Boolean);
+      const borrow = externalRewards
+        .filter(
+          (externalReward) =>
+            externalReward.reserveID === reserve.config.address &&
+            externalReward.side === "borrow"
+        )
+        .map((externalReward) => ({
+          rewardRate: this.getLatestRewardRate(
+            externalReward.rewardRates,
+            currentSlot
+          ).rewardRate,
+          rewardMint: externalReward.rewardMint,
+          rewardSymbol: externalReward.rewardSymbol,
+          price: priceData[externalReward.rewardSymbol],
+        }))
+        .filter(Boolean);
 
       return {
         ...acc,
